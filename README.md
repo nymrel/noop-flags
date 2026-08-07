@@ -161,6 +161,10 @@ real — flags genuinely declared and never read. Six is a sample, not a proof;
 we are not claiming a zero false-positive rate, and if you find one we want the
 issue.
 
+**On code we did not write.** Run against the **Python 3.13 standard library** it
+reports **zero findings** and skips 22 files. That is the result we wanted: on a
+well-maintained codebase it stays quiet rather than manufacturing work.
+
 **Note the shape of that trade.** 157 skipped against 21 reported means this tool
 is *heavily* biased toward silence. It is not an audit and it will not tell you
 your CLI is clean — it can only tell you about the files it could prove. That is
