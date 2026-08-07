@@ -45,8 +45,10 @@ read only `--apply`. Anyone belt-and-bracing a destructive command by adding
 (That one is fixed now; the fix is an explicit "you passed both, pick one" error.)
 
 **A delivery verifier tested the same product on every run.** It accepted
-`--product`, but only read it inside one branch. Every invocation printed `PASS`
-for whichever product was the default, no matter what you asked it to check.
+`--product`, but read it only inside the `--ref` branch, so every local run
+silently traversed the default product no matter what was asked for — and then
+printed `PASS`. **Five of the six products in that storefront had no delivery
+proof at all, while the harness reported that they did.**
 
 Two of those landed on the same day. That is a class, not a coincidence — and it
 is a class no linter was looking for. `ruff`'s `ARG001` catches unused *function*
@@ -142,6 +144,33 @@ python noop_flags.py --selftest         # prove the analyser on its known-tricky
 - name: No accepted-but-ignored CLI flags
   run: python noop_flags.py .
 ```
+
+## Limitations, and the false-positive numbers
+
+A detector that cries wolf gets uninstalled, so here are the real numbers rather
+than a claim.
+
+**Where it started.** The first, unfiltered version of this scan reported **75
+candidates on a 1,294-file tree. 57 were wrong** — a 76% false-positive rate.
+Every one of those 57 was one of the three unprovable shapes in the table above.
+That is why the refusals exist, and it is why the tool skips whole files.
+
+**Where it is now.** On that same tree today it reports **21 findings and skips
+157 files.** We hand-checked a six-finding sample from that run and all six were
+real — flags genuinely declared and never read. Six is a sample, not a proof;
+we are not claiming a zero false-positive rate, and if you find one we want the
+issue.
+
+**Note the shape of that trade.** 157 skipped against 21 reported means this tool
+is *heavily* biased toward silence. It is not an audit and it will not tell you
+your CLI is clean — it can only tell you about the files it could prove. That is
+the honest ceiling, and `--show-skipped` exists so you can see it.
+
+**The blind spot that will bite you.** `noop-flags` catches a flag read
+*nowhere*. It does **not** catch a flag read in *one branch out of several* —
+which is exactly the delivery-verifier bug above. That bug is the reason this
+tool exists and this tool would not have caught it. We would rather say so than
+let you infer a guarantee that isn't there.
 
 ## Scope, stated plainly
 
