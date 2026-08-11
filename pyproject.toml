@@ -24,9 +24,29 @@ dependencies = []
 [project.urls]
 Homepage = "https://github.com/nymrel/noop-flags"
 Source = "https://github.com/nymrel/noop-flags"
+Issues = "https://github.com/nymrel/noop-flags/issues"
+Changelog = "https://github.com/nymrel/noop-flags/blob/main/CHANGELOG.md"
 
 [project.scripts]
 noop-flags = "noop_flags:main"
 
 [tool.hatch.build.targets.wheel]
 include = ["noop_flags.py"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/noop_flags.py",
+    "/release_proof.py",
+    "/test_noop_flags.py",
+    "/test_release_proof.py",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
+    "/CHANGELOG.md",
+    "/CODE_OF_CONDUCT.md",
+    "/CONTRIBUTING.md",
+    "/RELEASING.md",
+    "/SECURITY.md",
+    "/docs/ADOPTION_EVIDENCE.md",
+    "/docs/PYPI_DECISION.md",
+]

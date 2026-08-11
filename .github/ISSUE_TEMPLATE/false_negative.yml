@@ -1,0 +1,34 @@
+name: False negative
+description: Report a same-file argparse flag that is never read but is not reported.
+title: "[false negative] "
+labels: [false-negative]
+body:
+  - type: markdown
+    attributes:
+      value: A known documented limitation is not automatically a bug. A small fixture helps us decide honestly.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations:
+      required: true
+  - type: textarea
+    id: fixture
+    attributes:
+      label: Minimal fixture and invocation
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Why the flag should be reported
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public-safety confirmation
+      options:
+        - label: This report contains no secrets, customer code, proprietary source, or private paths.
+          required: true

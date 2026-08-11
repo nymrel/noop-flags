@@ -1,0 +1,35 @@
+name: False positive
+description: Report a flag that noop-flags marks unread even though the program reads it.
+title: "[false positive] "
+labels: [false-positive]
+body:
+  - type: markdown
+    attributes:
+      value: Reduce the case to a synthetic fixture whenever possible. Do not upload private repositories.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations:
+      required: true
+  - type: textarea
+    id: fixture
+    attributes:
+      label: Minimal fixture and invocation
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: read
+    attributes:
+      label: Where the destination is read
+      description: Explain the AST shape or execution path that proves the reported destination is read.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public-safety confirmation
+      options:
+        - label: This report contains no secrets, customer code, proprietary source, or private paths.
+          required: true

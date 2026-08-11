@@ -1,0 +1,34 @@
+name: External fixture or reproduction
+description: Share an independently reproducible, public-safe run for the evidence ledger.
+title: "[fixture] "
+labels: [external-fixture]
+body:
+  - type: input
+    id: project
+    attributes:
+      label: Public project or fixture URL
+      description: A public repository link or a minimal synthetic fixture is enough.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: noop-flags version, Python, and operating system
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Invocation and result
+      description: Include expected and actual behavior and classify it as a true finding, false positive, false negative, or correct skip.
+    validations:
+      required: true
+  - type: checkboxes
+    id: independent
+    attributes:
+      label: Evidence confirmation
+      options:
+        - label: I am not reporting a run authored solely by the Nymrel maintainer.
+          required: true
+        - label: This report contains no secrets, customer code, proprietary source, or private paths.
+          required: true

@@ -1,0 +1,36 @@
+name: Bug report
+description: Report incorrect command behavior that is not a false-positive or false-negative classification.
+title: "[bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include secrets, customer code, or private paths. Use a minimal synthetic fixture.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: noop-flags 0.1.0 or a full commit SHA
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python and operating system
+      placeholder: Python 3.13.5 on Ubuntu 24.04
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the exact invocation, sanitized fixture, expected result, and actual result.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public-safety confirmation
+      options:
+        - label: This report contains no secrets, customer code, proprietary source, or private paths.
+          required: true

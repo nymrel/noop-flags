@@ -2,6 +2,12 @@
 
 **Which of your CLI flags do nothing?**
 
+[![CI](https://github.com/nymrel/noop-flags/actions/workflows/ci.yml/badge.svg)](https://github.com/nymrel/noop-flags/actions/workflows/ci.yml)
+
+> **Status:** beta source release candidate. There is no GitHub or PyPI release
+> yet. The commands below run the reviewed source directly; they are not a claim
+> of package publication or external adoption.
+
 `noop-flags` finds command-line flags your program *accepts* and then *never reads*.
 No config, no dependencies, one file.
 
@@ -201,6 +207,27 @@ pytest                   # if you prefer
 The tests assert in both directions where they can: that a genuinely ignored flag
 is reported, *and* that the same flag goes quiet once it is read. A guard proven
 only in the failing direction may be refusing everything.
+
+The release-candidate proof builds the wheel and source archive, checks their
+contents, installs the wheel into a clean environment outside this repository,
+exercises the console command, uninstalls it, and installs it again:
+
+```bash
+python -m pip install build
+python release_proof.py
+```
+
+## Contributing and evidence
+
+- [Contributing guide](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Release policy](RELEASING.md)
+- [Adoption evidence](docs/ADOPTION_EVIDENCE.md)
+- [PyPI decision](docs/PYPI_DECISION.md)
+
+The first adoption target is an independently reproducible run or fixture, not
+a star count. The evidence page starts at zero and changes only when a public
+receipt can be checked.
 
 ## Licence
 
