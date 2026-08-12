@@ -8,7 +8,7 @@ though the package metadata carries the intended first version.
 
 - Initial `argparse` accepted-but-never-read detector.
 - Precision-first refusal behavior for namespace escapes and unprovable reads.
-- Twenty-nine unit tests, a twelve-case analyzer self-test, own-source dogfood,
+- Unit tests, a twelve-case analyzer self-test, own-source dogfood,
   and Python 3.9 through 3.13 CI.
 - Release-candidate proof for archive contents and clean-environment install,
   uninstall, and reinstall behavior.

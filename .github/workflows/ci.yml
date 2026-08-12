@@ -58,7 +58,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install build tooling
-        run: python -m pip install --disable-pip-version-check build
+        run: python -m pip install --disable-pip-version-check build==1.5.1
       - name: Build, inspect, install, uninstall, and reinstall
         run: python release_proof.py --json > release-proof.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

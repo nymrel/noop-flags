@@ -37,6 +37,13 @@ ALLOWED_SDIST_FILES = REQUIRED_REPO_FILES | {
     "test_release_proof.py",
 }
 SENSITIVE_NAMES = {".env", "credentials", "id_rsa", "secrets.json"}
+WHEEL_DIST_INFO_FILES = {
+    "METADATA",
+    "WHEEL",
+    "RECORD",
+    "entry_points.txt",
+    "licenses/LICENSE",
+}
 
 
 def run(command: list[str], *, cwd: Path | None = None,
@@ -83,13 +90,31 @@ def safe_relative_member(member: str, root_name: str) -> str:
 def inspect_sdist(path: Path) -> list[str]:
     root_name = path.name.removesuffix(".tar.gz")
     with tarfile.open(path, "r:gz") as archive:
-        members = sorted(
-            relative
-            for member in archive.getmembers()
-            if member.isfile()
-            for relative in [safe_relative_member(member.name, root_name)]
-            if relative
-        )
+        members = []
+        for member in archive.getmembers():
+            relative = safe_relative_member(member.name, root_name)
+            if member.isdir():
+                continue
+            if not member.isfile():
+                if member.issym():
+                    member_type = "symlink"
+                elif member.islnk():
+                    member_type = "hardlink"
+                elif member.ischr():
+                    member_type = "character device"
+                elif member.isblk():
+                    member_type = "block device"
+                elif member.isfifo():
+                    member_type = "fifo"
+                else:
+                    member_type = repr(member.type)
+                raise RuntimeError(
+                    "sdist member is not a regular file or directory: "
+                    f"{member.name} (type={member_type})"
+                )
+            if relative:
+                members.append(relative)
+        members.sort()
     unexpected = sorted(set(members) - ALLOWED_SDIST_FILES)
     missing = sorted(REQUIRED_REPO_FILES - set(members))
     if unexpected or missing:
@@ -100,16 +125,28 @@ def inspect_sdist(path: Path) -> list[str]:
 
 
 def inspect_wheel(path: Path) -> list[str]:
+    wheel_name_parts = path.name.removesuffix(".whl").split("-")
+    if (not path.name.endswith(".whl") or len(wheel_name_parts) < 5
+            or wheel_name_parts[0] != "noop_flags" or not wheel_name_parts[1]):
+        raise RuntimeError(f"unexpected wheel filename: {path.name}")
+    dist_info = f"noop_flags-{wheel_name_parts[1]}.dist-info"
+    allowed = {"noop_flags.py"} | {
+        f"{dist_info}/{relative}" for relative in WHEEL_DIST_INFO_FILES
+    }
+
     with zipfile.ZipFile(path) as archive:
-        members = sorted(name for name in archive.namelist() if not name.endswith("/"))
-    if "noop_flags.py" not in members:
-        raise RuntimeError("wheel does not contain noop_flags.py")
-    top_level = [name for name in members if "/" not in name]
-    if top_level != ["noop_flags.py"]:
-        raise RuntimeError(f"wheel has unexpected top-level files: {top_level}")
+        members = sorted(archive.namelist())
     if any(PurePosixPath(name).is_absolute() or ".." in PurePosixPath(name).parts
            for name in members):
         raise RuntimeError("wheel contains an unsafe member path")
+    if len(members) != len(set(members)):
+        raise RuntimeError("wheel contains duplicate member names")
+    unexpected = sorted(set(members) - allowed)
+    missing = sorted(allowed - set(members))
+    if unexpected or missing:
+        raise RuntimeError(
+            f"wheel contents failed: unexpected={unexpected}, missing={missing}"
+        )
     return members
 
 
