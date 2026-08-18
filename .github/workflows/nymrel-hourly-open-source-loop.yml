@@ -1,0 +1,20 @@
+name: Nymrel hourly open-source loop
+
+on:
+  schedule:
+    - cron: "17 8,20 * * *"
+  workflow_dispatch:
+
+jobs:
+  maintain:
+    name: Propose guarded maintenance
+    uses: nymrel/PermitMesh/.github/workflows/nymrel-hourly-worker.yml@9bea36f40978a13e46952b1e31da97d1b6fd20a9
+    with:
+      canary_mode: false
+      guard_ref: 9bea36f40978a13e46952b1e31da97d1b6fd20a9
+    permissions:
+      actions: read
+      contents: write
+      issues: read
+      pull-requests: write
+      copilot-requests: write
