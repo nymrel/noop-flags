@@ -4,17 +4,24 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -26,3 +33,35 @@ jobs:
 
       - name: Dogfood — no ignored flags in our own source
         run: python noop_flags.py noop_flags.py
+
+      - name: Machine-readable smoke
+        shell: bash
+        run: |
+          set +e
+          python noop_flags.py --json noop_flags.py > noop-flags.json
+          code=$?
+          set -e
+          test "$code" -eq 0
+          python -c "import json; json.load(open('noop-flags.json', encoding='utf-8'))"
+
+  package:
+    name: package smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Build distributions
+        run: |
+          python -m pip install --disable-pip-version-check build
+          python -m build
+
+      - name: Install built wheel and prove console entry point
+        run: |
+          python -m pip install --force-reinstall dist/*.whl
+          noop-flags --version
+          noop-flags --selftest
+          noop-flags noop_flags.py
