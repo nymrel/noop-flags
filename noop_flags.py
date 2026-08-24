@@ -131,6 +131,8 @@ def analyse_source(src: str, label: str = "<src>") -> tuple[list[dict], str | No
         tree = ast.parse(src)
     except SyntaxError as exc:
         return [], f"syntax error: {exc.msg}"
+    except RecursionError as exc:
+        return [], f"analysis failed: {type(exc).__name__}: {exc}"
 
     declared = []
     for node in ast.walk(tree):
@@ -148,6 +150,9 @@ def analyse_source(src: str, label: str = "<src>") -> tuple[list[dict], str | No
 
     reads = {n.attr for n in ast.walk(tree)
              if isinstance(n, ast.Attribute) and isinstance(n.ctx, ast.Load)}
+    reads.update(n.target.attr for n in ast.walk(tree)
+                 if isinstance(n, ast.AugAssign)
+                 and isinstance(n.target, ast.Attribute))
     for n in ast.walk(tree):
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) \
                 and n.func.id in ("getattr", "setattr", "hasattr") and len(n.args) >= 2:
@@ -168,14 +173,19 @@ def scan(root: Path) -> tuple[list[dict], list[dict]]:
                         "node_modules", "site-packages"} for part in p.parts):
             continue
         try:
-            src = p.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        try:
             rel = str(p.relative_to(root if root.is_dir() else root.parent))
         except ValueError:
             rel = str(p)
-        found, reason = analyse_source(src, rel)
+        try:
+            src = p.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            skipped.append({"file": rel,
+                            "reason": f"unreadable: {type(exc).__name__}: {exc}"})
+            continue
+        try:
+            found, reason = analyse_source(src, rel)
+        except Exception as exc:
+            found, reason = [], f"analysis failed: {type(exc).__name__}: {exc}"
         findings.extend(found)
         if reason:
             skipped.append({"file": rel, "reason": reason})
@@ -214,6 +224,14 @@ def _cases() -> list[tuple[str, str, list[str], str | None]]:
          sub("print(args.__dict__)"), [], "namespace.__dict__"),
         ("getattr with a LITERAL name counts as a read",
          sub('print(getattr(args, "product"))'), ["used"], None),
+        ("augmented assignment reads its target but not a sibling", '''
+import argparse
+ap = argparse.ArgumentParser()
+ap.add_argument("--count", type=int, default=0)
+ap.add_argument("--unused")
+args = ap.parse_args()
+args.count += 1
+''', ["unused"], None),
         ("explicit dest= is honoured, not the flag name", '''
 import argparse
 ap = argparse.ArgumentParser()
