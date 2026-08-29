@@ -68,6 +68,24 @@ class TestDetection(unittest.TestCase):
                 return inner()
         '''), [])
 
+    def test_unrelated_attribute_does_not_hide_an_ignored_flag(self):
+        self.assertEqual(dests('''
+            import argparse
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--product")
+            args = ap.parse_args()
+            print(config.product)
+        '''), ["product"])
+
+    def test_unrelated_literal_getattr_does_not_hide_an_ignored_flag(self):
+        self.assertEqual(dests('''
+            import argparse
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--product")
+            args = ap.parse_args()
+            print(getattr(config, "product"))
+        '''), ["product"])
+
     def test_dashes_become_underscores(self):
         self.assertEqual(dests('''
             import argparse
@@ -192,6 +210,29 @@ class TestRefusals(unittest.TestCase):
         '''
         self.assertIsNone(skip_reason(src))
         self.assertEqual(dests(src), ["other"])
+
+    def test_dynamic_getattr_on_unrelated_object_does_not_skip(self):
+        src = '''
+            import argparse
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--product")
+            args = ap.parse_args()
+            field = "product"
+            print(getattr(config, field))
+        '''
+        self.assertIsNone(skip_reason(src))
+        self.assertEqual(dests(src), ["product"])
+
+    def test_unrelated_namespace_like_operations_do_not_skip(self):
+        src = '''
+            import argparse
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--product")
+            args = ap.parse_args()
+            print(vars(config), config.__dict__)
+        '''
+        self.assertIsNone(skip_reason(src))
+        self.assertEqual(dests(src), ["product"])
 
     def test_unparseable_file_is_skipped_not_passed(self):
         reason = skip_reason("def (:")

@@ -6,8 +6,9 @@ a check that passes without exercising anything. The operator reads a green that
 was never earned.
 
 HOW IT DECIDES. For each argparse `add_argument`, derive the destination name
-the way argparse itself does, then look for any read of that attribute anywhere
-in the same file. Declared, never read -> reported.
+the way argparse itself does, then look for reads of that attribute on the
+namespace returned by `parse_args()` in the same file. Declared, never read ->
+reported.
 
 WHAT IT REFUSES TO GUESS. Three shapes make a static read-check unsound. When a
 file contains one, the whole file is SKIPPED and counted, never silently passed:
@@ -93,19 +94,23 @@ def _namespace_names(tree: ast.AST) -> set[str]:
 
 def unprovable(tree: ast.AST) -> str | None:
     """Return the reason this file's reads cannot be proven statically, or None."""
+    ns = _namespace_names(tree)
     for n in ast.walk(tree):
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
-            if n.func.id == "vars":
+            namespace_arg = bool(
+                n.args and isinstance(n.args[0], ast.Name) and n.args[0].id in ns
+            )
+            if n.func.id == "vars" and namespace_arg:
                 return "vars(namespace)"
             if n.func.id in ("getattr", "setattr", "hasattr") and len(n.args) >= 2:
                 second = n.args[1]
-                if not (isinstance(second, ast.Constant)
+                if namespace_arg and not (isinstance(second, ast.Constant)
                         and isinstance(second.value, str)):
                     return "dynamic getattr/setattr"
-        if isinstance(n, ast.Attribute) and n.attr == "__dict__":
+        if (isinstance(n, ast.Attribute) and n.attr == "__dict__"
+                and isinstance(n.value, ast.Name) and n.value.id in ns):
             return "namespace.__dict__"
 
-    ns = _namespace_names(tree)
     for n in ast.walk(tree):
         if isinstance(n, ast.Call):
             # getattr(args, "literal") passes the namespace but names exactly one
@@ -113,7 +118,8 @@ def unprovable(tree: ast.AST) -> str | None:
             # exemption the escape rule swallows the whole file and hides every
             # genuinely-ignored flag in it -- caught by this tool's own selftest.
             if isinstance(n.func, ast.Name) and n.func.id in ("getattr", "setattr", "hasattr") \
-                    and len(n.args) >= 2 and isinstance(n.args[1], ast.Constant) \
+                    and len(n.args) >= 2 and isinstance(n.args[0], ast.Name) \
+                    and n.args[0].id in ns and isinstance(n.args[1], ast.Constant) \
                     and isinstance(n.args[1].value, str):
                 continue
             for arg in list(n.args) + [k.value for k in n.keywords]:
@@ -146,11 +152,14 @@ def analyse_source(src: str, label: str = "<src>") -> tuple[list[dict], str | No
     if reason:
         return [], reason
 
+    ns = _namespace_names(tree)
     reads = {n.attr for n in ast.walk(tree)
-             if isinstance(n, ast.Attribute) and isinstance(n.ctx, ast.Load)}
+             if isinstance(n, ast.Attribute) and isinstance(n.ctx, ast.Load)
+             and isinstance(n.value, ast.Name) and n.value.id in ns}
     for n in ast.walk(tree):
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) \
-                and n.func.id in ("getattr", "setattr", "hasattr") and len(n.args) >= 2:
+                and n.func.id in ("getattr", "setattr", "hasattr") and len(n.args) >= 2 \
+                and isinstance(n.args[0], ast.Name) and n.args[0].id in ns:
             second = n.args[1]
             if isinstance(second, ast.Constant) and isinstance(second.value, str):
                 reads.add(second.value)
