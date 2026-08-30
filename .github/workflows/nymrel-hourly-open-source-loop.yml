@@ -5,6 +5,12 @@ on:
     - cron: "17 8,20 * * *"
   workflow_dispatch:
 
+permissions: {}
+
+concurrency:
+  group: nymrel-hourly-open-source-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   maintain:
     name: Propose guarded maintenance
@@ -12,10 +18,12 @@ jobs:
     with:
       canary_mode: false
       guard_ref: 3a3e9ea17ca7655cb635f06f7fb51aa0b00ce1c5
+    # This is the exact permission ceiling required by the immutable two-job worker:
+    # the AI proposer is read-only, while a separate deterministic job may open one draft PR.
     permissions:
-      actions: read
-      contents: write
+      actions: read # Non-AI publisher retrieves the guarded proposal artifact.
+      contents: write # Non-AI publisher pushes only the isolated proposal branch.
       issues: read
-      pull-requests: write
-      copilot-requests: write
+      pull-requests: write # Non-AI publisher opens one draft pull request.
+      copilot-requests: write # Read-only proposer invokes GitHub Copilot CLI.
       statuses: write

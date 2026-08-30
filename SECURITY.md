@@ -4,7 +4,10 @@
 
 ## Supported versions
 
-The current `main` branch and latest tagged release, when one exists, are supported. Pre-release branches may change without notice.
+The current `main` branch and latest tagged release, when one exists, are
+supported on maintained Python 3.11–3.14 releases. Pre-release branches may
+change without notice. A workflow artifact is release evidence, not a published
+package or supported release.
 
 ## Report a security issue
 

@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   test:
     name: test (${{ matrix.os }}, py${{ matrix.python-version }})
@@ -17,11 +21,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11.16"
+          - os: ubuntu-latest
+            python-version: "3.12.14"
+          - os: ubuntu-latest
+            python-version: "3.13.15"
+          - os: ubuntu-latest
+            python-version: "3.14.7"
+          - os: windows-latest
+            python-version: "3.13.15"
+          - os: windows-latest
+            python-version: "3.14.7"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: Check out without write credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -45,79 +65,51 @@ jobs:
           python -c "import json; json.load(open('noop-flags.json', encoding='utf-8'))"
 
   package:
-    name: package smoke
+    name: package boundary
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: Check out without write credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: "3.13"
+          persist-credentials: false
 
-      - name: Verify release metadata contract
+      - name: Set up current Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.7"
+
+      - name: Verify source release contract
+        run: python scripts/verify_package.py
+
+      - name: Build distributions with a bounded frontend
         run: |
-          python - <<'PY'
-          import re
-          from pathlib import Path
-
-          source = Path('noop_flags.py').read_text(encoding='utf-8')
-          metadata = Path('pyproject.toml').read_text(encoding='utf-8')
-          license_text = Path('LICENSE').read_text(encoding='utf-8')
-
-          source_version = re.search(r'^__version__ = "([^"]+)"$', source, re.MULTILINE)
-          project_version = re.search(r'^version = "([^"]+)"$', metadata, re.MULTILINE)
-          if source_version is None or project_version is None:
-              raise SystemExit('version metadata is missing')
-          if source_version.group(1) != project_version.group(1):
-              raise SystemExit('source and package versions disagree')
-          if 'noop-flags = "noop_flags:main"' not in metadata:
-              raise SystemExit('console entry point drifted')
-          if 'dependencies = []' not in metadata:
-              raise SystemExit('runtime dependency-free contract drifted')
-          if 'license = { file = "LICENSE" }' not in metadata:
-              raise SystemExit('package license reference drifted')
-          if not license_text.startswith('MIT License'):
-              raise SystemExit('root license no longer matches package metadata')
-          if 'requires = ["hatchling>=1.27,<2"]' not in metadata:
-              raise SystemExit('build backend compatibility bound drifted')
-          PY
-
-      - name: Build distributions
-        run: |
-          python -m pip install --disable-pip-version-check "build>=1.2,<2"
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          python -m pip install --disable-pip-version-check "build==1.6.0"
           python -m build
 
-      - name: Inspect built wheel contract
+      - name: Inspect built distributions
+        shell: bash
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          from zipfile import ZipFile
+          set -euo pipefail
+          mapfile -t wheels < <(find dist -maxdepth 1 -type f -name '*.whl')
+          mapfile -t sdists < <(find dist -maxdepth 1 -type f -name '*.tar.gz')
+          test "${#wheels[@]}" -eq 1
+          test "${#sdists[@]}" -eq 1
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 2
+          wheel="${wheels[0]}"
+          sdist="${sdists[0]}"
+          python scripts/verify_package.py --wheel "$wheel" --sdist "$sdist"
 
-          wheels = list(Path('dist').glob('*.whl'))
-          if len(wheels) != 1:
-              raise SystemExit(f'expected one wheel, found {len(wheels)}')
-          with ZipFile(wheels[0]) as archive:
-              names = archive.namelist()
-              if 'noop_flags.py' not in names:
-                  raise SystemExit('wheel does not contain noop_flags.py')
-              metadata_name = next(
-                  (name for name in names if name.endswith('.dist-info/METADATA')),
-                  None,
-              )
-              if metadata_name is None:
-                  raise SystemExit('wheel metadata is missing')
-              metadata = archive.read(metadata_name).decode('utf-8')
-          if 'Name: noop-flags' not in metadata:
-              raise SystemExit('wheel name drifted')
-          if 'Version: 0.1.0' not in metadata:
-              raise SystemExit('wheel version drifted')
-          if 'Requires-Dist:' in metadata:
-              raise SystemExit('wheel unexpectedly declares a runtime dependency')
-          PY
-
-      - name: Install built wheel and prove console entry point
+      - name: Install the wheel and prove its console entry point
+        shell: bash
         run: |
-          python -m pip install --force-reinstall dist/*.whl
-          noop-flags --version
-          noop-flags --selftest
-          noop-flags noop_flags.py
+          set -euo pipefail
+          mapfile -t wheels < <(find dist -maxdepth 1 -type f -name '*.whl')
+          test "${#wheels[@]}" -eq 1
+          wheel="${wheels[0]}"
+          python -m venv .package-venv
+          .package-venv/bin/python -m pip install --disable-pip-version-check --no-deps "$wheel"
+          .package-venv/bin/noop-flags --version
+          .package-venv/bin/noop-flags --selftest
+          .package-venv/bin/noop-flags noop_flags.py
