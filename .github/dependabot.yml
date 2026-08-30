@@ -1,0 +1,31 @@
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "15:00"
+      timezone: America/Los_Angeles
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - github-actions
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "15:15"
+      timezone: America/Los_Angeles
+    open-pull-requests-limit: 3
+    groups:
+      build-tooling:
+        patterns:
+          - build
+          - hatchling
+    labels:
+      - dependencies
+      - python
