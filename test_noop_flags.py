@@ -86,6 +86,43 @@ class TestDetection(unittest.TestCase):
             print(getattr(config, "product"))
         '''), ["product"])
 
+    def test_literal_setattr_does_not_hide_an_ignored_flag(self):
+        self.assertEqual(dests('''
+            import argparse
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--product")
+            args = ap.parse_args()
+            setattr(args, "product", "override")
+        '''), ["product"])
+
+    def test_dynamic_setattr_does_not_make_reads_unprovable(self):
+        self.assertEqual(dests('''
+            import argparse
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--product")
+            args = ap.parse_args()
+            field = "product"
+            setattr(args, field, "override")
+        '''), ["product"])
+
+    def test_setattr_still_refuses_when_the_namespace_escapes_as_the_value(self):
+        self.assertEqual(skip_reason('''
+            import argparse
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--product")
+            args = ap.parse_args()
+            setattr(args, "shadow", args)
+        '''), "namespace passed to another call")
+
+    def test_literal_hasattr_counts_as_a_read(self):
+        self.assertEqual(dests('''
+            import argparse
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--product")
+            args = ap.parse_args()
+            print(hasattr(args, "product"))
+        '''), [])
+
     def test_dashes_become_underscores(self):
         self.assertEqual(dests('''
             import argparse
@@ -158,7 +195,7 @@ class TestRefusals(unittest.TestCase):
             args = ap.parse_args()
             field = "product"
             print(getattr(args, field))
-        '''), "dynamic getattr/setattr")
+        '''), "dynamic getattr/hasattr")
 
     def test_namespace_passed_to_a_call_refuses(self):
         self.assertEqual(skip_reason('''

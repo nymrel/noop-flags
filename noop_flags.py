@@ -102,27 +102,33 @@ def unprovable(tree: ast.AST) -> str | None:
             )
             if n.func.id == "vars" and namespace_arg:
                 return "vars(namespace)"
-            if n.func.id in ("getattr", "setattr", "hasattr") and len(n.args) >= 2:
+            if n.func.id in ("getattr", "hasattr") and len(n.args) >= 2:
                 second = n.args[1]
                 if namespace_arg and not (isinstance(second, ast.Constant)
                         and isinstance(second.value, str)):
-                    return "dynamic getattr/setattr"
+                    return "dynamic getattr/hasattr"
         if (isinstance(n, ast.Attribute) and n.attr == "__dict__"
                 and isinstance(n.value, ast.Name) and n.value.id in ns):
             return "namespace.__dict__"
 
     for n in ast.walk(tree):
         if isinstance(n, ast.Call):
-            # getattr(args, "literal") passes the namespace but names exactly one
-            # attribute, so it is a precise READ, not an escape. Without this
-            # exemption the escape rule swallows the whole file and hides every
-            # genuinely-ignored flag in it -- caught by this tool's own selftest.
-            if isinstance(n.func, ast.Name) and n.func.id in ("getattr", "setattr", "hasattr") \
+            # getattr(args, "literal") and hasattr(args, "literal") name exactly
+            # one attribute, so they are precise reads rather than escapes.
+            if isinstance(n.func, ast.Name) and n.func.id in ("getattr", "hasattr") \
                     and len(n.args) >= 2 and isinstance(n.args[0], ast.Name) \
                     and n.args[0].id in ns and isinstance(n.args[1], ast.Constant) \
                     and isinstance(n.args[1].value, str):
                 continue
-            for arg in list(n.args) + [k.value for k in n.keywords]:
+            # setattr mutates the namespace; it does not read the flag. Exclude
+            # only that first namespace argument from the escape check so a
+            # namespace passed as the value still fails closed.
+            args_to_check = list(n.args)
+            if isinstance(n.func, ast.Name) and n.func.id == "setattr" \
+                    and len(n.args) >= 2 and isinstance(n.args[0], ast.Name) \
+                    and n.args[0].id in ns:
+                args_to_check = list(n.args[1:])
+            for arg in args_to_check + [k.value for k in n.keywords]:
                 if isinstance(arg, ast.Name) and arg.id in ns:
                     return "namespace passed to another call"
         if isinstance(n, ast.Return) and isinstance(n.value, ast.Name) and n.value.id in ns:
@@ -158,7 +164,7 @@ def analyse_source(src: str, label: str = "<src>") -> tuple[list[dict], str | No
              and isinstance(n.value, ast.Name) and n.value.id in ns}
     for n in ast.walk(tree):
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) \
-                and n.func.id in ("getattr", "setattr", "hasattr") and len(n.args) >= 2 \
+                and n.func.id in ("getattr", "hasattr") and len(n.args) >= 2 \
                 and isinstance(n.args[0], ast.Name) and n.args[0].id in ns:
             second = n.args[1]
             if isinstance(second, ast.Constant) and isinstance(second.value, str):
@@ -212,7 +218,7 @@ def _cases() -> list[tuple[str, str, list[str], str | None]]:
         ("accepted-and-ignored flag IS reported",
          _BASE, ["product"], None),
         ("dynamic getattr -> refuse to guess",
-         sub('f="product"\n    print(getattr(args, f))'), [], "dynamic getattr/setattr"),
+         sub('f="product"\n    print(getattr(args, f))'), [], "dynamic getattr/hasattr"),
         ("namespace passed to a call -> refuse",
          sub("helper(args)"), [], "namespace passed to another call"),
         ("vars(args) -> refuse",
@@ -223,6 +229,13 @@ def _cases() -> list[tuple[str, str, list[str], str | None]]:
          sub("print(args.__dict__)"), [], "namespace.__dict__"),
         ("getattr with a LITERAL name counts as a read",
          sub('print(getattr(args, "product"))'), ["used"], None),
+        ("literal setattr is a write, not a read",
+         sub('setattr(args, "product", "override")\n    print(args.used)'), ["product"], None),
+        ("dynamic setattr is still a write, not an escape",
+         sub('field="product"\n    setattr(args, field, "override")\n    print(args.used)'),
+         ["product"], None),
+        ("hasattr with a LITERAL name counts as a read",
+         sub('print(hasattr(args, "product"))\n    print(args.used)'), [], None),
         ("explicit dest= is honoured, not the flag name", '''
 import argparse
 ap = argparse.ArgumentParser()
