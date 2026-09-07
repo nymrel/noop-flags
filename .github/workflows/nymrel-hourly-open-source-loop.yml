@@ -18,3 +18,4 @@ jobs:
       issues: read
       pull-requests: write
       copilot-requests: write
+      statuses: write
