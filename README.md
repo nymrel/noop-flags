@@ -191,16 +191,33 @@ let you infer a guarantee that isn't there.
 - **`--selftest` proves the analyser, not your code.** They are different claims
   and the tool keeps them apart.
 
+## Runtime and distribution status
+
+The package contract supports maintained Python 3.11–3.14 releases. The
+maintainer runtime is pinned in `.python-version` to Python 3.14.7, and CI
+tests exact current patch releases on Linux and Windows.
+
+This repository does not contain a PyPI publication step. Its release-evidence
+workflow builds the wheel and source distribution, verifies their contents,
+records SHA-256 digests, and creates GitHub provenance attestations. A package
+registry binding, publication decision, tag, and public release remain separate
+maintainer gates.
+
 ## Development
 
 ```bash
-python -m unittest -v    # 29 tests, no dependencies
-pytest                   # if you prefer
+python scripts/verify_package.py
+python -m unittest -v
+python noop_flags.py --selftest
+python noop_flags.py noop_flags.py
 ```
 
 The tests assert in both directions where they can: that a genuinely ignored flag
 is reported, *and* that the same flag goes quiet once it is read. A guard proven
-only in the failing direction may be refusing everything.
+only in the failing direction may be refusing everything. The release verifier
+also fails closed on source/package version drift, unsupported runtime metadata,
+runtime dependencies, unsafe archive paths, and missing license or entry-point
+metadata.
 
 ## Licence
 
