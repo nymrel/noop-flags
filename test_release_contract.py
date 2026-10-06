@@ -16,6 +16,29 @@ class TestReleaseContract(unittest.TestCase):
     def test_current_source_contract(self):
         self.assertEqual(verify_package.verify_source(ROOT), "0.1.0")
 
+    def test_build_backend_requires_one_exact_hatchling_release(self):
+        for requirement in (["hatchling==1.32.3"], ["hatchling==1.33.0"]):
+            with self.subTest(requirement=requirement):
+                verify_package.verify_build_requirements(requirement)
+
+        for requirement in (
+            None,
+            [],
+            ["hatchling>=1.32.3"],
+            ["hatchling==1.32"],
+            ["hatchling==1.٣٢.٣"],
+            ["hatchling==2.0.0"],
+            ["hatchling==1.32.3", "wheel==0.46.1"],
+            ["setuptools==80.9.0"],
+        ):
+            with (
+                self.subTest(requirement=requirement),
+                self.assertRaisesRegex(
+                    verify_package.VerificationError, "single exact hatchling"
+                ),
+            ):
+                verify_package.verify_build_requirements(requirement)
+
     def test_exact_version_tag_is_required(self):
         verify_package.verify_tag("v0.1.0", "0.1.0")
         with self.assertRaisesRegex(verify_package.VerificationError, "does not match"):
