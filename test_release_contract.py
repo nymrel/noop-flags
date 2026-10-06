@@ -26,6 +26,7 @@ class TestReleaseContract(unittest.TestCase):
             [],
             ["hatchling>=1.32.3"],
             ["hatchling==1.32"],
+            ["hatchling==1.٣٢.٣"],
             ["hatchling==2.0.0"],
             ["hatchling==1.32.3", "wheel==0.46.1"],
             ["setuptools==80.9.0"],
