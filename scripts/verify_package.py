@@ -17,7 +17,7 @@ from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_VERSION_PATTERN = re.compile(r'^__version__ = "([^"]+)"$', re.MULTILINE)
-HATCHLING_PIN_PATTERN = re.compile(r"^hatchling==1\.\d+\.\d+$")
+HATCHLING_PIN_PATTERN = re.compile(r"^hatchling==1\.[0-9]+\.[0-9]+$")
 
 
 class VerificationError(RuntimeError):
