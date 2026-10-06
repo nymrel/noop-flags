@@ -17,6 +17,7 @@ from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_VERSION_PATTERN = re.compile(r'^__version__ = "([^"]+)"$', re.MULTILINE)
+HATCHLING_PIN_PATTERN = re.compile(r"^hatchling==1\.\d+\.\d+$")
 
 
 class VerificationError(RuntimeError):
@@ -26,6 +27,16 @@ class VerificationError(RuntimeError):
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise VerificationError(message)
+
+
+def verify_build_requirements(requirements: object) -> None:
+    require(
+        isinstance(requirements, list)
+        and len(requirements) == 1
+        and isinstance(requirements[0], str)
+        and HATCHLING_PIN_PATTERN.fullmatch(requirements[0]) is not None,
+        "build backend dependency must be a single exact hatchling release pin",
+    )
 
 
 def sha256(path: Path) -> str:
@@ -60,10 +71,7 @@ def verify_source(root: Path = ROOT) -> str:
     require(
         project.get("license-files") == ["LICENSE"], "license file declaration drifted"
     )
-    require(
-        build_system.get("requires") == ["hatchling==1.32.0"],
-        "build backend identity drifted",
-    )
+    verify_build_requirements(build_system.get("requires"))
     require(
         build_system.get("build-backend") == "hatchling.build", "build backend drifted"
     )
