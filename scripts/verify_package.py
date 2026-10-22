@@ -92,6 +92,7 @@ def verify_tag(tag: str, version: str) -> None:
 def verify_archive_path(name: str) -> None:
     require("\\" not in name, f"archive contains a non-POSIX path: {name}")
     path = PurePosixPath(name)
+    require(bool(path.parts), f"archive contains an empty path: {name!r}")
     require(not path.is_absolute(), f"archive contains an absolute path: {name}")
     require(".." not in path.parts, f"archive contains path traversal: {name}")
 

@@ -51,6 +51,8 @@ class TestReleaseContract(unittest.TestCase):
 
     def test_archive_paths_fail_closed(self):
         for unsafe_path in (
+            "",
+            ".",
             "../outside",
             "pkg/../../outside",
             "/absolute",
