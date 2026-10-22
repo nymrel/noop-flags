@@ -84,6 +84,8 @@ class TestDistributionContents(unittest.TestCase):
         return {
             "noop_flags.py": (ROOT / "noop_flags.py").read_bytes(),
             f"{self.DIST_INFO}/METADATA": self.METADATA,
+            f"{self.DIST_INFO}/WHEEL": b"Wheel-Version: 1.0\nTag: py3-none-any\n",
+            f"{self.DIST_INFO}/RECORD": b"",
             f"{self.DIST_INFO}/entry_points.txt": (
                 b"[console_scripts]\nnoop-flags = noop_flags:main\n"
             ),
@@ -148,6 +150,27 @@ class TestDistributionContents(unittest.TestCase):
                 else:
                     entries[name] = entry_point
                 with self.assertRaises(verify_package.VerificationError):
+                    verify_package.verify_wheel(self.write_wheel(entries), self.VERSION)
+
+    def test_wheel_rejects_unreviewed_payloads(self):
+        for name in (
+            "unexpected.pth",
+            "unexpected.py",
+            "noop_flags-0.1.0.data/purelib/unexpected.pth",
+            "extra-0.1.0.dist-info/entry_points.txt",
+        ):
+            with self.subTest(name=name):
+                entries = self.wheel_entries()
+                entries[name] = b"import unexpected\n"
+                with self.assertRaisesRegex(verify_package.VerificationError, "contents"):
+                    verify_package.verify_wheel(self.write_wheel(entries), self.VERSION)
+
+    def test_wheel_rejects_missing_required_distribution_files(self):
+        for filename in ("WHEEL", "RECORD"):
+            with self.subTest(filename=filename):
+                entries = self.wheel_entries()
+                del entries[f"{self.DIST_INFO}/{filename}"]
+                with self.assertRaisesRegex(verify_package.VerificationError, "contents"):
                     verify_package.verify_wheel(self.write_wheel(entries), self.VERSION)
 
     def test_wheel_rejects_payload_substitution_even_with_same_version(self):

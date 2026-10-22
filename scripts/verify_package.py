@@ -154,14 +154,19 @@ def verify_wheel(path: Path, version: str, root: Path = ROOT) -> dict[str, str]:
             )
 
         dist_info = f"noop_flags-{version}.dist-info"
-        metadata_names = [
-            name for name in names if name.endswith(".dist-info/METADATA")
-        ]
+        expected_names = {
+            "noop_flags.py",
+            *(f"{dist_info}/{filename}" for filename in (
+                "METADATA", "WHEEL", "entry_points.txt", "licenses/LICENSE", "RECORD"
+            )),
+        }
         require(
-            metadata_names == [f"{dist_info}/METADATA"],
-            "wheel must contain exactly its versioned METADATA file",
+            set(names) == expected_names,
+            "wheel contents differ from the one-module distribution contract: "
+            f"missing={sorted(expected_names - set(names))}, "
+            f"unexpected={sorted(set(names) - expected_names)}",
         )
-        verify_metadata(archive.read(metadata_names[0]), version, "wheel")
+        verify_metadata(archive.read(f"{dist_info}/METADATA"), version, "wheel")
 
         for filename, source_filename in (
             ("noop_flags.py", "noop_flags.py"),
