@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import hashlib
 import json
 import re
@@ -91,15 +92,61 @@ def verify_tag(tag: str, version: str) -> None:
 def verify_archive_path(name: str) -> None:
     require("\\" not in name, f"archive contains a non-POSIX path: {name}")
     path = PurePosixPath(name)
+    require(bool(path.parts), f"archive contains an empty path: {name!r}")
     require(not path.is_absolute(), f"archive contains an absolute path: {name}")
     require(".." not in path.parts, f"archive contains path traversal: {name}")
 
 
-def verify_wheel(path: Path, version: str) -> dict[str, str]:
+def verify_unique_paths(names: list[str], kind: str) -> None:
+    normalized = [str(PurePosixPath(name)) for name in names]
+    require(len(normalized) == len(set(normalized)), f"{kind} contains duplicate paths")
+
+
+def verify_metadata(data: bytes, version: str, kind: str) -> None:
+    metadata = BytesParser(policy=policy.default).parsebytes(data)
+    for field, expected in (
+        ("Name", "noop-flags"),
+        ("Version", version),
+        ("Requires-Python", ">=3.11"),
+        ("License-Expression", "MIT"),
+    ):
+        require(
+            metadata.get_all(field) == [expected], f"{kind} {field} metadata drifted"
+        )
+    require(
+        not metadata.get_all("Requires-Dist"),
+        f"{kind} unexpectedly declares runtime dependencies",
+    )
+
+
+def verify_entry_points(data: bytes) -> None:
+    entry_points = configparser.ConfigParser(interpolation=None)
+    entry_points.optionxform = str
+    try:
+        entry_points.read_string(data.decode("utf-8"))
+    except (UnicodeDecodeError, configparser.Error) as error:
+        raise VerificationError("wheel has invalid console entry-point metadata") from error
+    require(
+        not entry_points.defaults()
+        and entry_points.sections() == ["console_scripts"]
+        and dict(entry_points["console_scripts"]) == {"noop-flags": "noop_flags:main"},
+        "wheel console entry point drifted",
+    )
+
+
+def verify_payload(data: bytes, filename: str, kind: str, root: Path) -> None:
+    require(
+        data == (root / filename).read_bytes(),
+        f"{kind} {filename} differs from the source checkout",
+    )
+
+
+def verify_wheel(path: Path, version: str, root: Path = ROOT) -> dict[str, str]:
     require(path.is_file(), f"wheel does not exist: {path}")
     with ZipFile(path) as archive:
         entries = archive.infolist()
         names = [entry.filename for entry in entries]
+        verify_unique_paths(names, "wheel")
         for entry in entries:
             verify_archive_path(entry.filename)
             require(
@@ -107,47 +154,42 @@ def verify_wheel(path: Path, version: str) -> dict[str, str]:
                 f"wheel contains a link: {entry.filename}",
             )
 
-        metadata_names = [
-            name for name in names if name.endswith(".dist-info/METADATA")
-        ]
+        dist_info = f"noop_flags-{version}.dist-info"
+        expected_names = {
+            "noop_flags.py",
+            *(f"{dist_info}/{filename}" for filename in (
+                "METADATA", "WHEEL", "entry_points.txt", "licenses/LICENSE", "RECORD"
+            )),
+        }
         require(
-            len(metadata_names) == 1, "wheel must contain exactly one METADATA file"
+            set(names) == expected_names,
+            "wheel contents differ from the one-module distribution contract: "
+            f"missing={sorted(expected_names - set(names))}, "
+            f"unexpected={sorted(set(names) - expected_names)}",
         )
-        metadata = BytesParser(policy=policy.default).parsebytes(
-            archive.read(metadata_names[0])
-        )
+        verify_metadata(archive.read(f"{dist_info}/METADATA"), version, "wheel")
 
-        require("noop_flags.py" in names, "wheel is missing noop_flags.py")
-        require(metadata.get("Name") == "noop-flags", "wheel project name drifted")
-        require(metadata.get("Version") == version, "wheel version drifted")
-        require(
-            metadata.get("Requires-Python") == ">=3.11", "wheel Python floor drifted"
-        )
-        require(
-            metadata.get("License-Expression") == "MIT", "wheel SPDX metadata drifted"
-        )
-        require(
-            not metadata.get_all("Requires-Dist"),
-            "wheel unexpectedly declares runtime dependencies",
-        )
-        require(
-            any(name.endswith(".dist-info/entry_points.txt") for name in names),
-            "wheel is missing console entry-point metadata",
-        )
-        require(
-            any(".dist-info/licenses/LICENSE" in name for name in names),
-            "wheel is missing its declared license file",
-        )
+        for filename, source_filename in (
+            ("noop_flags.py", "noop_flags.py"),
+            (f"{dist_info}/licenses/LICENSE", "LICENSE"),
+        ):
+            require(filename in names, f"wheel is missing {filename}")
+            verify_payload(archive.read(filename), source_filename, "wheel", root)
+
+        entry_point_name = f"{dist_info}/entry_points.txt"
+        require(entry_point_name in names, "wheel is missing console entry-point metadata")
+        verify_entry_points(archive.read(entry_point_name))
 
     return {"path": path.name, "sha256": sha256(path)}
 
 
-def verify_sdist(path: Path, version: str) -> dict[str, str]:
+def verify_sdist(path: Path, version: str, root: Path = ROOT) -> dict[str, str]:
     require(path.is_file(), f"sdist does not exist: {path}")
     expected_root = f"noop_flags-{version}"
     with tarfile.open(path, mode="r:gz") as archive:
         members = archive.getmembers()
         names = [member.name for member in members]
+        verify_unique_paths(names, "sdist")
         for member in members:
             verify_archive_path(member.name)
             require(
@@ -163,14 +205,19 @@ def verify_sdist(path: Path, version: str) -> dict[str, str]:
         require(
             roots == {expected_root}, "sdist contains files outside its versioned root"
         )
-        require(
-            f"{expected_root}/noop_flags.py" in names, "sdist is missing noop_flags.py"
-        )
-        require(
-            f"{expected_root}/pyproject.toml" in names,
-            "sdist is missing pyproject.toml",
-        )
-        require(f"{expected_root}/LICENSE" in names, "sdist is missing LICENSE")
+        by_name = {member.name: member for member in members}
+
+        def read_file(filename: str) -> bytes:
+            member = by_name.get(f"{expected_root}/{filename}")
+            require(member is not None and member.isfile(), f"sdist is missing {filename}")
+            handle = archive.extractfile(member)
+            require(handle is not None, f"sdist cannot read {filename}")
+            with handle:
+                return handle.read()
+
+        for filename in ("noop_flags.py", "pyproject.toml", "LICENSE"):
+            verify_payload(read_file(filename), filename, "sdist", root)
+        verify_metadata(read_file("PKG-INFO"), version, "sdist")
 
     return {"path": path.name, "sha256": sha256(path)}
 
