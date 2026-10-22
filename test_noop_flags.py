@@ -19,6 +19,7 @@ import textwrap
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 import noop_flags
 
@@ -276,6 +277,13 @@ class TestRefusals(unittest.TestCase):
         self.assertIsNotNone(reason)
         self.assertTrue(reason.startswith("syntax error"))
 
+    def test_parser_recursion_is_skipped_not_raised(self):
+        with patch.object(noop_flags.ast, "parse",
+                          side_effect=RecursionError("too deep")):
+            found, reason = noop_flags.analyse_source("x = 1")
+        self.assertEqual(found, [])
+        self.assertEqual(reason, "analysis failed: RecursionError: too deep")
+
     def test_a_skipped_file_yields_no_findings(self):
         """UNKNOWN is not a pass, and it is not a finding either."""
         found, reason = noop_flags.analyse_source(
@@ -351,6 +359,85 @@ class TestScan(unittest.TestCase):
         ''')
         findings, _ = noop_flags.scan(p)
         self.assertEqual([f["dest"] for f in findings], ["solo"])
+
+
+    def test_augmented_assignment_reads_target_without_hiding_sibling(self):
+        source = '''
+            import argparse
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--count", type=int, default=0)
+            ap.add_argument("--unused")
+            args = ap.parse_args()
+            args.count += 1
+        '''
+        self.assertEqual(dests(source), ["unused"])
+
+    def test_unrelated_augmented_assignment_does_not_hide_ignored_flag(self):
+        source = '''
+            import argparse
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--count", type=int, default=0)
+            args = ap.parse_args()
+            config.count += 1
+        '''
+        self.assertEqual(dests(source), ["count"])
+
+    def test_scan_reports_unreadable_file_and_continues(self):
+        blocked = self.write("blocked.py", "x = 1")
+        self.write("later.py", '''
+            import argparse
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--ignored")
+            args = ap.parse_args()
+        ''')
+        original_read_text = Path.read_text
+
+        def read_text(path, *args, **kwargs):
+            if path == blocked:
+                raise OSError("denied")
+            return original_read_text(path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", read_text):
+            findings, skipped = noop_flags.scan(self.root)
+
+        self.assertEqual([f["dest"] for f in findings], ["ignored"])
+        self.assertEqual(skipped, [{
+            "file": "blocked.py",
+            "reason": "unreadable: OSError: denied",
+        }])
+
+    def test_scan_isolates_analyser_failure_and_continues(self):
+        self.write("boom.py", "x = 1")
+        self.write("later.py", '''
+            import argparse
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--ignored")
+            args = ap.parse_args()
+        ''')
+        original_analyse_source = noop_flags.analyse_source
+
+        def analyse_source(src, label="<src>"):
+            if label == "boom.py":
+                raise RuntimeError("boom")
+            return original_analyse_source(src, label)
+
+        with patch.object(noop_flags, "analyse_source",
+                          side_effect=analyse_source):
+            findings, skipped = noop_flags.scan(self.root)
+
+        self.assertEqual([f["dest"] for f in findings], ["ignored"])
+        self.assertEqual(skipped, [{
+            "file": "boom.py",
+            "reason": "analysis failed: RuntimeError: boom",
+        }])
+
+    def test_scan_does_not_swallow_process_control_exceptions(self):
+        self.write("a.py", "x = 1")
+        for exc in (KeyboardInterrupt(), SystemExit(7)):
+            with self.subTest(exc=type(exc).__name__):
+                with patch.object(noop_flags, "analyse_source", side_effect=exc):
+                    with self.assertRaises(type(exc)):
+                        noop_flags.scan(self.root)
 
 
 class TestExitCodes(unittest.TestCase):
