@@ -79,14 +79,15 @@ def dest_for(call: ast.Call) -> tuple[str | None, str | None]:
 
 def _namespace_names(tree: ast.AST) -> set[str]:
     """Names bound to the result of parse_args(). Falls back to the common
-    conventions when the call is not a plain assignment."""
+    conventions when the call is not a normal or annotated assignment."""
     names = set()
     for n in ast.walk(tree):
-        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call):
+        if isinstance(n, (ast.Assign, ast.AnnAssign)) and isinstance(n.value, ast.Call):
             f = n.value.func
             fname = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
             if fname == "parse_args":
-                for t in n.targets:
+                targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+                for t in targets:
                     if isinstance(t, ast.Name):
                         names.add(t.id)
     return names or {"args", "a", "ns", "opts"}

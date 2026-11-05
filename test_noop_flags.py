@@ -78,6 +78,36 @@ class TestDetection(unittest.TestCase):
             print(config.product)
         '''), ["product"])
 
+    def test_annotated_namespace_tracks_reads_and_ignored_sibling(self):
+        self.assertEqual(dests('''
+            import argparse
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--product")
+            ap.add_argument("--unused")
+            config: argparse.Namespace = ap.parse_args()
+            print(config.product)
+        '''), ["unused"])
+
+    def test_annotated_namespace_still_refuses_dynamic_reads(self):
+        self.assertEqual(skip_reason('''
+            import argparse
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--product")
+            config: argparse.Namespace = ap.parse_args()
+            field = "product"
+            print(getattr(config, field))
+        '''), "dynamic getattr/hasattr")
+
+    def test_annotation_without_a_value_does_not_bind_a_namespace(self):
+        self.assertEqual(dests('''
+            import argparse
+            ap = argparse.ArgumentParser()
+            ap.add_argument("--product")
+            config: argparse.Namespace
+            args = ap.parse_args()
+            print(config.product)
+        '''), ["product"])
+
     def test_unrelated_literal_getattr_does_not_hide_an_ignored_flag(self):
         self.assertEqual(dests('''
             import argparse
