@@ -5,6 +5,14 @@
 `noop-flags` finds command-line flags your program *accepts* and then *never reads*.
 No config, no dependencies, one file.
 
+## Choose a starting point
+
+| Your goal | Start here | Read the result |
+| --- | --- | --- |
+| Understand a report without coding | Read [what it refuses to answer](#what-it-refuses-to-answer) and share the flagged file, flag name, and declaration line with your developer. | A finding means a flag is declared but never read within the supported analysis. It is not a full audit of the application's behavior. No installation is needed to interpret an existing report. |
+| Check a Python CLI | Run the source command below on a file or directory, with `--show-skipped` to see the analysis limits. | Exit `1` means findings. Exit `2` means the scan could not run. A skipped file was not checked; exit `0` alone does not establish a complete clean scan. |
+| Automate with an agent or CI | Use `--json` for findings and skipped files, or [SARIF](#sarif-for-an-existing-code-review-workflow) for explicit coverage diagnostics. | Retain stdout even on exit `1`. Check skipped files and coverage before declaring success. The scan does not modify source or upload a report; apply any fixes through your existing review process. |
+
 ```bash
 curl -sO https://raw.githubusercontent.com/nymrel/noop-flags/main/noop_flags.py
 python noop_flags.py .
