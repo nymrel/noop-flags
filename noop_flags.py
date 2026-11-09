@@ -26,25 +26,36 @@ Usage:
   python noop_flags.py                 # scan the current directory
   python noop_flags.py path/to/src
   python noop_flags.py --json
+  python noop_flags.py --require-complete
   python noop_flags.py --show-skipped
   python noop_flags.py --selftest
 
-Exit codes:
+Default exit codes:
   0  no ignored parameters found
   1  at least one flag is accepted and never read
   2  the scan could not run (bad path)
+
+With --require-complete, incomplete scoped scans exit 2 before findings (1)
+or a completed scan without findings (0). See README for its source scope.
 """
 from __future__ import annotations
 
 import argparse
 import ast
+import fnmatch
+import io
 import json
 import os
+import stat
 import sys
+import tokenize
 from pathlib import Path
 from urllib.parse import quote_from_bytes
 
 __version__ = "0.1.0"
+
+_EXCLUDED_PARTS = {"__pycache__", ".git", ".venv", "venv",
+                   "node_modules", "site-packages"}
 
 
 # Actions argparse consumes itself during parsing. Their dest exists on the
@@ -192,8 +203,7 @@ def _scan_counted(root: Path) -> tuple[list[dict], list[dict], int, bool]:
     single_file = root.is_file()
     files = [root] if single_file else sorted(root.rglob("*.py"))
     for p in files:
-        if any(part in {"__pycache__", ".git", ".venv", "venv",
-                        "node_modules", "site-packages"} for part in p.parts):
+        if any(part in _EXCLUDED_PARTS for part in p.parts):
             continue
         candidates += 1
         try:
@@ -221,6 +231,207 @@ def scan(root: Path) -> tuple[list[dict], list[dict]]:
     return findings, skipped
 
 
+def _is_link(info: os.stat_result) -> bool:
+    # Refuse Windows directory junctions and other reparse points too.
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
+def _signature(info: os.stat_result) -> tuple[int, ...]:
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _checked_target(text: str) -> tuple[Path | None, str | None]:
+    """Inspect lexical components before resolve() can erase a root link."""
+    try:
+        lexical = Path(text).expanduser().absolute()
+        current = Path(lexical.anchor)
+        for part in lexical.parts[1:]:
+            current /= part
+            if _is_link(current.lstat()):
+                return None, "symlink-target"
+        return lexical.resolve(), None
+    except (OSError, RuntimeError):
+        return None, "input-unavailable"
+
+
+class _SourceChanged(ValueError):
+    pass
+
+
+class _UnsupportedSource(ValueError):
+    pass
+
+
+def _complete_scan(root: Path | None, input_issue: str | None = None
+                   ) -> tuple[list[dict], list[dict], dict]:
+    """Checked, no-follow enumeration and observed stable source analysis.
+
+    This is an opt-in scoped gate, not an atomic filesystem snapshot or sandbox.
+    The legacy walker and pure analyzer retain their existing behavior.
+    """
+    findings: list[dict] = []
+    skipped: list[dict] = []
+    discovery: list[dict] = []
+    files: list[tuple[Path, os.stat_result | None]] = []
+    directories: dict[str, tuple[Path, os.stat_result]] = {}
+
+    def label(path: Path) -> str:
+        assert root is not None
+        base = root if directories else root.parent
+        try:
+            return str(path.relative_to(base))
+        except ValueError:
+            return "."
+
+    def problem(path: Path | None, category: str, message: str) -> None:
+        discovery.append({"file": label(path) if path is not None else ".",
+                          "category": category, "message": message})
+
+    def read_source(path: Path, expected: os.stat_result) -> str:
+        if _is_link(expected) or not stat.S_ISREG(expected.st_mode):
+            raise _UnsupportedSource
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        with os.fdopen(os.open(path, flags), "rb") as stream:
+            if _signature(os.fstat(stream.fileno())) != _signature(expected):
+                raise _SourceChanged
+            raw = stream.read()
+            if _signature(os.fstat(stream.fileno())) != _signature(expected):
+                raise _SourceChanged
+        if _signature(path.lstat()) != _signature(expected):
+            raise _SourceChanged
+        encoding, _ = tokenize.detect_encoding(io.BytesIO(raw).readline)
+        return raw.decode(encoding)
+
+    if input_issue or root is None:
+        problem(None, input_issue or "input-unavailable",
+                "Input could not be resolved without links.")
+    elif any(part in _EXCLUDED_PARTS for part in root.parts):
+        problem(None, "excluded-target", "The target is inside a documented excluded directory.")
+    else:
+        try:
+            info = root.lstat()
+            if _is_link(info):
+                problem(None, "symlink-target", "A linked target cannot satisfy the checked gate.")
+            elif stat.S_ISREG(info.st_mode):
+                files.append((root, info))
+            elif stat.S_ISDIR(info.st_mode):
+                directories[str(root)] = (root, info)
+
+                def walk_error(error: OSError) -> None:
+                    path = Path(error.filename) if error.filename else root
+                    problem(path, "traversal-error", "Directory traversal could not complete.")
+
+                for directory, names, filenames in os.walk(root, topdown=True,
+                                                           onerror=walk_error, followlinks=False):
+                    here = Path(directory)
+                    try:
+                        observed = here.lstat()
+                        entry = directories.get(str(here))
+                        expected = entry[1] if entry is not None else None
+                        if (expected is None or _is_link(observed)
+                                or _signature(observed) != _signature(expected)):
+                            raise ValueError("directory changed")
+                    except (OSError, ValueError):
+                        problem(here, "directory-changed", "A directory changed during traversal.")
+                        names[:] = []
+                        continue
+
+                    retained = []
+                    for name in sorted(names):
+                        if name in _EXCLUDED_PARTS:
+                            continue
+                        path = here / name
+                        try:
+                            child = path.lstat()
+                            if _is_link(child):
+                                problem(path, "linked-directory",
+                                        "A linked directory was not followed.")
+                            elif not stat.S_ISDIR(child.st_mode):
+                                problem(path, "directory-changed",
+                                        "A directory entry changed during traversal.")
+                            else:
+                                directories[str(path)] = (path, child)
+                                retained.append(name)
+                        except OSError:
+                            problem(path, "traversal-error", "A directory could not be inspected.")
+                    names[:] = retained
+
+                    for name in sorted(filenames):
+                        if not fnmatch.fnmatch(name, "*.py"):
+                            continue
+                        path = here / name
+                        try:
+                            files.append((path, path.lstat()))
+                        except OSError:
+                            # A selected source that vanished is still a candidate.
+                            files.append((path, None))
+            else:
+                problem(None, "unsupported-target", "The target is not a regular file or directory.")
+        except OSError:
+            problem(None, "input-unavailable", "The target could not be inspected.")
+
+    stable: list[tuple[Path, os.stat_result]] = []
+    for path, expected in sorted(files, key=lambda item: str(item[0])):
+        rel = label(path)
+        try:
+            if expected is None:
+                raise OSError("source unavailable")
+            src = read_source(path, expected)
+        except _SourceChanged:
+            skipped.append({"file": rel, "reason": "source changed: metadata mismatch"})
+            continue
+        except _UnsupportedSource:
+            skipped.append({"file": rel, "reason": "unsupported source: regular files required"})
+            continue
+        except (OSError, UnicodeError, SyntaxError, LookupError):
+            skipped.append({"file": rel, "reason": "unreadable: source could not be decoded or read"})
+            continue
+        try:
+            found, reason = analyse_source(src, rel)
+        except Exception:
+            found, reason = [], "analysis failed: analyzer did not complete"
+        if reason:
+            skipped.append({"file": rel, "reason": reason})
+        else:
+            findings.extend(found)
+            stable.append((path, expected))
+
+    # Detect common changes after enumeration/read/analysis. This is best-effort,
+    # not an atomic snapshot and not protection against a hostile filesystem.
+    for path, expected in stable:
+        try:
+            changed = _signature(path.lstat()) != _signature(expected)
+        except OSError:
+            changed = True
+        if changed:
+            rel = label(path)
+            findings[:] = [row for row in findings if row["file"] != rel]
+            skipped.append({"file": rel, "reason": "source changed: metadata mismatch"})
+    for path, expected in directories.values():
+        try:
+            changed = _signature(path.lstat()) != _signature(expected)
+        except OSError:
+            changed = True
+        if changed:
+            problem(path, "directory-changed", "A directory changed during the scan.")
+
+    candidates = len(files)
+    analyzed = candidates - len(skipped)
+    complete = not discovery and not skipped and analyzed > 0
+    code = 2 if not complete else 1 if findings else 0
+    coverage = {"schema": "noop-flags.complete-scan.v1", "required": True,
+                "complete": complete, "discoveryComplete": not discovery,
+                "candidateFiles": candidates, "analyzedFiles": analyzed,
+                "skippedFiles": len(skipped), "discoveryDiagnostics": discovery,
+                "exitCode": code}
+    return findings, skipped, coverage
+
+
 def _sarif_uri(label: str) -> str:
     # Path understands this host's separators; a POSIX literal backslash must
     # remain a filename character rather than becoming a directory separator.
@@ -228,7 +439,8 @@ def _sarif_uri(label: str) -> str:
 
 
 def _sarif_report(findings: list[dict], skipped: list[dict], candidates: int,
-                  *, input_failed: bool = False, discovery_complete: bool = False) -> dict:
+                  *, input_failed: bool = False, discovery_complete: bool = False,
+                  complete_scan: dict | None = None) -> dict:
     """Project one scan to SARIF without source snippets or absolute roots.
 
     Invocation success records tool execution, not a clean/complete analysis.
@@ -247,6 +459,12 @@ def _sarif_report(findings: list[dict], skipped: list[dict], candidates: int,
         elif reason.startswith("analysis failed:"):
             category = "analysis-failed"
             message = "Analysis did not complete; the file was not checked."
+        elif reason.startswith("source changed:"):
+            category = "source-changed"
+            message = "The source changed during the checked scan; its findings were discarded."
+        elif reason.startswith("unsupported source:"):
+            category = "unsupported-source"
+            message = "The selected source is not a supported regular file; it was not checked."
         else:
             category = "unprovable"
             message = "Namespace reads cannot be proven statically; the file was not checked."
@@ -282,7 +500,7 @@ def _sarif_report(findings: list[dict], skipped: list[dict], candidates: int,
     else:
         coverage = "partial" if skipped else "complete"
 
-    if not input_failed and not discovery_complete:
+    if not input_failed and not discovery_complete and complete_scan is None:
         notifications.append({
             "descriptor": {"id": "NF-DISCOVERY-UNKNOWN"},
             "level": "warning",
@@ -301,7 +519,7 @@ def _sarif_report(findings: list[dict], skipped: list[dict], candidates: int,
             "region": {"startLine": row["line"]},
         }}],
     } for row in findings]
-    return {
+    report = {
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",
         "runs": [{
@@ -342,12 +560,34 @@ def _sarif_report(findings: list[dict], skipped: list[dict], candidates: int,
                 "skippedFiles": len(skipped),
                 "analysisCoverage": coverage,
                 "discoveryCoverage": ("unavailable" if input_failed else
-                                      "complete" if discovery_complete else "unknown"),
+                                      "complete" if discovery_complete else
+                                      "incomplete" if complete_scan is not None else "unknown"),
                 "scope": "Eligible source files encountered by the existing walk; "
                          "single-file argparse reads only.",
             },
         }],
     }
+    if complete_scan is not None:
+        run = report["runs"][0]
+        run["properties"]["completeScan"] = complete_scan
+        run["properties"]["scope"] = (
+            "Eligible regular Python sources under checked traversal; "
+            "documented exclusions and mutation limitations apply."
+        )
+        invocation = run["invocations"][0]
+        invocation["exitCode"] = complete_scan["exitCode"]
+        for row in complete_scan["discoveryDiagnostics"]:
+            invocation["executionSuccessful"] = False
+            invocation["toolExecutionNotifications"].append({
+                "descriptor": {"id": "NF-ANALYSIS-ERROR"},
+                "level": "error",
+                "message": {"text": row["message"]},
+                "locations": [{"physicalLocation": {
+                    "artifactLocation": {"uri": _sarif_uri(row["file"])},
+                }}],
+                "properties": {"category": row["category"]},
+            })
+    return report
 
 
 # --------------------------------------------------------------------------
@@ -451,6 +691,62 @@ def selftest(as_json: bool) -> int:
     return 0 if passed == len(results) else 1
 
 
+def _print_scan(root: Path | None, findings: list[dict], skipped: list[dict],
+                show_skipped: bool, *, incomplete: bool = False) -> None:
+    if not findings:
+        if incomplete:
+            print("No complete finding verdict is available for this scoped input.")
+        else:
+            print(f"no accepted-but-ignored parameters under {root}")
+    else:
+        by: dict[str, list[dict]] = {}
+        for f in findings:
+            by.setdefault(f["file"], []).append(f)
+        print(f"{len(findings)} accepted-but-ignored parameter(s) "
+              f"in {len(by)} file(s):\n")
+        for f, rows in sorted(by.items(), key=lambda kv: -len(kv[1])):
+            print(f"  {f}")
+            for r in rows:
+                print(f"      {r['flag']:<28} -> args.{r['dest']}  "
+                      f"(declared line {r['line']}, never read)")
+        print()
+
+    if skipped:
+        print(f"{len(skipped)} file(s) SKIPPED -- reads not statically provable, "
+              f"so nothing was checked in them"
+              f"{'' if show_skipped else ' (--show-skipped to list)'}")
+        if show_skipped:
+            for s in skipped:
+                print(f"      {s['file']}: {s['reason']}")
+
+
+def _complete_cli(path_text: str, as_json: bool, as_sarif: bool,
+                  show_skipped: bool) -> int:
+    root, issue = _checked_target(path_text)
+    findings, skipped, coverage = _complete_scan(root, issue)
+    if as_sarif:
+        print(json.dumps(_sarif_report(
+            findings, skipped, coverage["candidateFiles"],
+            input_failed=root is None,
+            discovery_complete=coverage["discoveryComplete"],
+            complete_scan=coverage,
+        ), indent=2))
+    elif as_json:
+        print(json.dumps({"root": str(root) if root is not None else None,
+                          "findings": findings, "skipped": skipped,
+                          "coverage": coverage}, indent=2))
+    else:
+        state = ("INCOMPLETE" if not coverage["complete"]
+                 else "FINDINGS" if findings else "PASS")
+        print(f"Complete-scan gate: {state}; exit {coverage['exitCode']}; "
+              f"{coverage['analyzedFiles']}/{coverage['candidateFiles']} source(s) analyzed")
+        for row in coverage["discoveryDiagnostics"]:
+            print(f"  {row['file']}: {row['message']}")
+        _print_scan(root, findings, skipped, show_skipped,
+                    incomplete=not coverage["complete"])
+    return coverage["exitCode"]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="noop-flags",
@@ -465,13 +761,20 @@ def main(argv: list[str] | None = None) -> int:
                     help="list files whose reads could not be proven statically")
     ap.add_argument("--selftest", action="store_true",
                     help="prove the analyser against its own known-tricky cases")
+    ap.add_argument("--require-complete", action="store_true",
+                    help="require checked scoped traversal and analysis before exit 0/1")
     ap.add_argument("--version", action="version", version=f"noop-flags {__version__}")
     args = ap.parse_args(argv)
 
     if args.sarif and args.selftest:
         ap.error("--sarif describes source scans; use --json for selftest output")
+    if args.require_complete and args.selftest:
+        ap.error("--require-complete describes source scans, not detector selftests")
     if args.selftest:
         return selftest(args.json)
+
+    if args.require_complete:
+        return _complete_cli(args.path, args.json, args.sarif, args.show_skipped)
 
     try:
         root = Path(args.path).expanduser().resolve()
@@ -505,29 +808,7 @@ def main(argv: list[str] | None = None) -> int:
                           "skipped": skipped}, indent=2))
         return 1 if findings else 0
 
-    if not findings:
-        print(f"no accepted-but-ignored parameters under {root}")
-    else:
-        by: dict[str, list[dict]] = {}
-        for f in findings:
-            by.setdefault(f["file"], []).append(f)
-        print(f"{len(findings)} accepted-but-ignored parameter(s) "
-              f"in {len(by)} file(s):\n")
-        for f, rows in sorted(by.items(), key=lambda kv: -len(kv[1])):
-            print(f"  {f}")
-            for r in rows:
-                print(f"      {r['flag']:<28} -> args.{r['dest']}  "
-                      f"(declared line {r['line']}, never read)")
-        print()
-
-    if skipped:
-        # Not a pass. These files were not checked, and saying so is the point.
-        print(f"{len(skipped)} file(s) SKIPPED -- reads not statically provable, "
-              f"so nothing was checked in them"
-              f"{'' if args.show_skipped else ' (--show-skipped to list)'}")
-        if args.show_skipped:
-            for s in skipped:
-                print(f"      {s['file']}: {s['reason']}")
+    _print_scan(root, findings, skipped, args.show_skipped)
 
     return 1 if findings else 0
 

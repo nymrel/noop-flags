@@ -135,6 +135,7 @@ python noop_flags.py                    # scan the current directory
 python noop_flags.py path/to/src        # scan a directory or a single file
 python noop_flags.py --json             # machine-readable, for CI
 python noop_flags.py --sarif            # SARIF 2.1.0, with coverage diagnostics
+python noop_flags.py --require-complete # opt-in checked scoped-scan gate
 python noop_flags.py --show-skipped     # list what couldn't be proven, and why
 python noop_flags.py --selftest         # prove the analyser on its known-tricky cases
 ```
@@ -146,6 +147,76 @@ python noop_flags.py --selftest         # prove the analyser on its known-tricky
 | `0` | No ignored parameters found |
 | `1` | At least one flag is accepted and never read |
 | `2` | The scan could not run (bad path) |
+
+These are the default exit codes. `--require-complete` opts into the stricter
+scoped-scan policy below; without that flag, existing behavior is unchanged.
+
+### Require a known scoped scan before accepting a clean result
+
+The opt-in `--require-complete` gate is an unreleased source addition. It keeps
+the same single-file `argparse` detector and its precision/refusal rules, but
+uses checked traversal and source acquisition instead of relying on the legacy
+directory walk. Run each command separately:
+
+```bash
+python noop_flags.py src --require-complete
+python noop_flags.py src --require-complete --json > checked.json
+python noop_flags.py src --require-complete --sarif > checked.sarif
+```
+
+| Exit | Checked-mode meaning |
+| --- | --- |
+| `0` | Checked traversal and analysis completed for at least one eligible source; no ignored arguments found. |
+| `1` | The same scoped scan completed; ignored arguments were found. |
+| `2` | Completeness could not be established, including zero analyzed sources, unsupported/dynamic sources, traversal/read/parse failures or observed mutation. |
+
+Incomplete takes precedence over findings: if a scan finds one ignored flag but
+cannot analyze another eligible input, it retains the finding and exits `2`.
+Human output labels the gate `PASS`, `FINDINGS` or `INCOMPLETE`. JSON and SARIF
+reports are emitted for all three gate outcomes; preserve the report even when
+the process returns nonzero. Selftests cannot be combined with this gate.
+
+In JSON, the existing `root`, `findings` and `skipped` fields remain, and the
+flag adds `coverage`. An unresolvable input has a null `root`. The coverage
+object has schema `noop-flags.complete-scan.v1`, `required`, `complete`,
+`discoveryComplete`, `candidateFiles`, `analyzedFiles`, `skippedFiles`,
+`discoveryDiagnostics` and `exitCode`. Discovery diagnostics have relative
+`file`, coarse `category` and `message` fields. Directory diagnostics never
+inflate the source-file counts. `complete` requires successful checked
+discovery, no source skips and at least one analyzed source.
+
+SARIF keeps its existing result/location structure and adds the same object at
+`runs[0].properties.completeScan`, plus `invocations[0].exitCode`. Its checked
+`discoveryCoverage` can be `complete`, `incomplete` or `unavailable`, and every
+discovery failure has a visible relative-location notification. Execution
+success is still separate from gate success: a dynamic-source refusal or empty
+input can finish normally while the explicit gate returns `2`.
+
+The scope and remaining limits are deliberate:
+
+- Directory scans select regular `*.py` sources under the platform's filename
+  matching rules; an explicit regular file is interpreted as Python source.
+  The existing named exclusions are pruned: `__pycache__`, `.git`, `.venv`,
+  `venv`, `node_modules` and `site-packages`. An explicit target inside an
+  excluded directory fails the gate rather than passing with zero inputs.
+- The checked gate does not follow directory links, selected-file links,
+  junctions or other Windows reparse points. Root link components are checked
+  before resolution, including linked ancestors. Review and supply a canonical
+  path if that is the intended source. A linked directory or selected source
+  is diagnosed as incomplete, not silently included or counted as clean.
+  Special files such as FIFOs are refused without reading their payloads.
+- Sources decode strictly using Python's encoding detection, including normal
+  UTF-8/BOM and declared encodings. Invalid bytes or encoding declarations are
+  unreadable input; replacement decoding cannot make the gate complete.
+- Before/open/after file metadata and observed directory changes detect common
+  mutation during a scan. Findings from a changed source are discarded. This
+  is best-effort observation, not an atomic filesystem snapshot, a sandbox or
+  protection from a hostile filesystem. Benign concurrent changes can also
+  make the gate incomplete; use a stable source tree.
+- Completion covers only this documented source scope and analyzer. It does
+  not establish whole-repository security, conditional execution, cross-file
+  reads, excluded content or a future source state. No new workflow, upload,
+  account permission, dependency or publication is enabled.
 
 ### SARIF for an existing code-review workflow
 
@@ -180,7 +251,8 @@ encountered candidates were analyzed; it does not certify filesystem enumeration
 or anything outside the scanner's existing scope. Zero analyzed sources is explicitly
 reported; an empty results array does not establish a clean scan.
 
-`discoveryCoverage` is a separate property. An explicit single-file target has
+Without `--require-complete`, `discoveryCoverage` is a separate property. An
+explicit single-file target has
 `complete` discovery, while directory discovery is always `unknown` with a
 warning: the existing `Path.rglob` walk can silently omit unreadable directories.
 A missing/unresolvable target is `unavailable`. Thus even complete analysis of
