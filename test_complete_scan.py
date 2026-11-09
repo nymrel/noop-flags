@@ -90,6 +90,19 @@ class TestCompleteScan(unittest.TestCase):
                     self.assertIn("gate: INCOMPLETE", report)
                     self.assertIn("--ignored", report)
 
+    def test_rewritten_source_is_stable_before_a_new_scan(self):
+        source = self.write("rewritten.py", CLEAN)
+        source.write_text(IGNORED, encoding="utf-8")
+        with source.open("rb") as stream:
+            by_path = source.lstat()
+            by_fd = os.fstat(stream.fileno())
+        fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns",
+                  "st_ctime_ns", "st_birthtime_ns")
+        metadata = {"path": {key: getattr(by_path, key, None) for key in fields},
+                    "descriptor": {key: getattr(by_fd, key, None) for key in fields}}
+        code, report, _ = self.run_checked()
+        self.assertEqual(code, 1, json.dumps({"report": report, "metadata": metadata}))
+
     def test_zero_sources_is_incomplete_even_with_successful_traversal(self):
         self.write("notes.txt", "outside directory source selection")
         code, _, coverage = self.run_checked()
