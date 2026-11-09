@@ -26,7 +26,8 @@ class TestSarif(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        # Match the CLI's canonical root, including Windows short-name aliases.
+        self.root = Path(self.temporary.name).resolve()
 
     def write(self, name, source):
         path = self.root / name
