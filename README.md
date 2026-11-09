@@ -126,6 +126,7 @@ Sweep your own instrument first.
 python noop_flags.py                    # scan the current directory
 python noop_flags.py path/to/src        # scan a directory or a single file
 python noop_flags.py --json             # machine-readable, for CI
+python noop_flags.py --sarif            # SARIF 2.1.0, with coverage diagnostics
 python noop_flags.py --show-skipped     # list what couldn't be proven, and why
 python noop_flags.py --selftest         # prove the analyser on its known-tricky cases
 ```
@@ -137,6 +138,58 @@ python noop_flags.py --selftest         # prove the analyser on its known-tricky
 | `0` | No ignored parameters found |
 | `1` | At least one flag is accepted and never read |
 | `2` | The scan could not run (bad path) |
+
+### SARIF for an existing code-review workflow
+
+The `--sarif` reporter is an unreleased source addition. It emits the existing
+detector's findings using SARIF 2.1.0; it adds no analyzer, account, service or
+runtime dependency. From an exact source checkout, create a local report:
+
+```bash
+python noop_flags.py . --sarif > noop-flags.sarif
+```
+
+Exit `1` still means findings were produced, so retain the report even when a CI
+step records failure. `--sarif` and `--json` are mutually exclusive. Selftests
+retain their existing human/JSON output rather than pretending to scan a source
+tree. Shell redirection controls the output file and may replace an existing
+file; the scanner does not open a report path or upload anything.
+
+Rule `NF001` is a correctness warning with the declaration's start line. Paths
+are relative to the scan directory (or a single file's parent) and URI-encoded;
+scan the repository root when the consumer expects repository-relative paths.
+Only start lines are emitted, avoiding ambiguous Unicode column units. There are
+no source snippets, absolute root path, vulnerability score or security claim.
+File and argument names remain potentially sensitive metadata.
+
+Every skipped file has a diagnostic with its relative location and a coarse
+reason category. Raw parser/OS exception text is omitted. The run's properties
+show `candidateFiles`, `analyzedFiles`, `skippedFiles` and `analysisCoverage`
+(`complete`, `partial`, `none` or `unavailable`). Counts cover the existing
+scanner's encountered eligible source files, not excluded directories, other
+languages, cross-file reads or conditional execution. `complete` means all
+encountered candidates were analyzed; it does not certify filesystem enumeration
+or anything outside the scanner's existing scope. Zero analyzed sources is explicitly
+reported; an empty results array does not establish a clean scan.
+
+`discoveryCoverage` is a separate property. An explicit single-file target has
+`complete` discovery, while directory discovery is always `unknown` with a
+warning: the existing `Path.rglob` walk can silently omit unreadable directories.
+A missing/unresolvable target is `unavailable`. Thus even complete analysis of
+the encountered candidates does not certify a complete directory scan. Existing
+human/JSON scanning behavior is unchanged.
+
+`invocations[0].executionSuccessful` describes tool execution, not an all-source
+quality verdict: read/parser/analysis errors make it false, while deliberate
+dynamic-namespace refusals alone do not. Existing CLI exit policy is unchanged:
+exit `0` means no findings, even if coverage is incomplete. Inspect diagnostics
+and coverage properties when deciding whether a report is sufficient for a gate.
+
+The format can be consumed by existing SARIF tools. GitHub code-scanning access,
+upload permissions, root mapping, fingerprints and service limits are separate
+consumer responsibilities; this change enables no workflow, upload or account
+permission. GitHub uses a supported subset of SARIF and may not display every
+coverage property. Retain the full report for incomplete-analysis diagnostics.
 
 **In CI**
 
