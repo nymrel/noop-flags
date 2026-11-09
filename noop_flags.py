@@ -239,9 +239,11 @@ def _is_link(info: os.stat_result) -> bool:
     )
 
 
-def _signature(info: os.stat_result) -> tuple[int, ...]:
-    return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
-            info.st_mtime_ns, info.st_ctime_ns)
+def _signature(info: os.stat_result, *, cross_api: bool = False) -> tuple[int, ...]:
+    common = (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns)
+    # Windows path stat uses birth time for ctime, while fstat can use change
+    # time (CPython #157671). Keep ctime for comparisons within the same API.
+    return common if cross_api and os.name == "nt" else common + (info.st_ctime_ns,)
 
 
 def _checked_target(text: str) -> tuple[Path | None, str | None]:
@@ -297,10 +299,13 @@ def _complete_scan(root: Path | None, input_issue: str | None = None
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         with os.fdopen(os.open(path, flags), "rb") as stream:
-            if _signature(os.fstat(stream.fileno())) != _signature(expected):
+            opened = os.fstat(stream.fileno())
+            if _signature(opened, cross_api=True) != _signature(expected, cross_api=True):
+                raise _SourceChanged
+            if _signature(path.lstat()) != _signature(expected):
                 raise _SourceChanged
             raw = stream.read()
-            if _signature(os.fstat(stream.fileno())) != _signature(expected):
+            if _signature(os.fstat(stream.fileno())) != _signature(opened):
                 raise _SourceChanged
         if _signature(path.lstat()) != _signature(expected):
             raise _SourceChanged
