@@ -39,8 +39,10 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import sys
 from pathlib import Path
+from urllib.parse import quote_from_bytes
 
 __version__ = "0.1.0"
 
@@ -183,14 +185,17 @@ def analyse_source(src: str, label: str = "<src>") -> tuple[list[dict], str | No
              for d, flag, line in declared if d not in reads], None)
 
 
-def scan(root: Path) -> tuple[list[dict], list[dict]]:
+def _scan_counted(root: Path) -> tuple[list[dict], list[dict], int, bool]:
     findings: list[dict] = []
     skipped: list[dict] = []
-    files = [root] if root.is_file() else sorted(root.rglob("*.py"))
+    candidates = 0
+    single_file = root.is_file()
+    files = [root] if single_file else sorted(root.rglob("*.py"))
     for p in files:
         if any(part in {"__pycache__", ".git", ".venv", "venv",
                         "node_modules", "site-packages"} for part in p.parts):
             continue
+        candidates += 1
         try:
             rel = str(p.relative_to(root if root.is_dir() else root.parent))
         except ValueError:
@@ -208,7 +213,141 @@ def scan(root: Path) -> tuple[list[dict], list[dict]]:
         findings.extend(found)
         if reason:
             skipped.append({"file": rel, "reason": reason})
+    return findings, skipped, candidates, single_file
+
+
+def scan(root: Path) -> tuple[list[dict], list[dict]]:
+    findings, skipped, _, _ = _scan_counted(root)
     return findings, skipped
+
+
+def _sarif_uri(label: str) -> str:
+    # Path understands this host's separators; a POSIX literal backslash must
+    # remain a filename character rather than becoming a directory separator.
+    return quote_from_bytes(os.fsencode(Path(label).as_posix()), safe="/")
+
+
+def _sarif_report(findings: list[dict], skipped: list[dict], candidates: int,
+                  *, input_failed: bool = False, discovery_complete: bool = False) -> dict:
+    """Project one scan to SARIF without source snippets or absolute roots.
+
+    Invocation success records tool execution, not a clean/complete analysis.
+    Existing skip and exit-code policies stay separate from this projection.
+    """
+    notifications: list[dict] = []
+    execution_successful = not input_failed
+    for row in skipped:
+        reason = row["reason"]
+        if reason.startswith("unreadable:"):
+            category = "unreadable"
+            message = "This source could not be read; the file was not checked."
+        elif reason.startswith("syntax error:"):
+            category = "syntax-error"
+            message = "This source could not be parsed; the file was not checked."
+        elif reason.startswith("analysis failed:"):
+            category = "analysis-failed"
+            message = "Analysis did not complete; the file was not checked."
+        else:
+            category = "unprovable"
+            message = "Namespace reads cannot be proven statically; the file was not checked."
+        failed = category != "unprovable"
+        execution_successful = execution_successful and not failed
+        notifications.append({
+            "descriptor": {"id": "NF-ANALYSIS-ERROR" if failed else "NF-SKIPPED"},
+            "level": "error" if failed else "warning",
+            "message": {"text": message},
+            "locations": [{"physicalLocation": {
+                "artifactLocation": {"uri": _sarif_uri(row["file"])},
+            }}],
+            "properties": {"category": category},
+        })
+
+    analyzed = candidates - len(skipped)
+    if input_failed:
+        coverage = "unavailable"
+        notifications.append({
+            "descriptor": {"id": "NF-ANALYSIS-ERROR"},
+            "level": "error",
+            "message": {"text": "The input path was unavailable or traversal failed; "
+                        "no coverage is established."},
+        })
+    elif analyzed == 0:
+        coverage = "none"
+        notifications.append({
+            "descriptor": {"id": "NF-NO-ANALYSIS"},
+            "level": "warning",
+            "message": {"text": "No eligible Python file was analyzed; "
+                        "empty results do not establish a clean scan."},
+        })
+    else:
+        coverage = "partial" if skipped else "complete"
+
+    if not input_failed and not discovery_complete:
+        notifications.append({
+            "descriptor": {"id": "NF-DISCOVERY-UNKNOWN"},
+            "level": "warning",
+            "message": {"text": "Directory enumeration is not certified by this scanner; "
+                        "full traversal coverage is unknown."},
+        })
+
+    results = [{
+        "ruleId": "NF001",
+        "ruleIndex": 0,
+        "level": "warning",
+        "message": {"text": f"Argument {row['flag']!r} is accepted but its destination "
+                    f"{row['dest']!r} is never read in this file."},
+        "locations": [{"physicalLocation": {
+            "artifactLocation": {"uri": _sarif_uri(row["file"])},
+            "region": {"startLine": row["line"]},
+        }}],
+    } for row in findings]
+    return {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {
+                "name": "noop-flags",
+                "semanticVersion": __version__,
+                "informationUri": "https://github.com/nymrel/noop-flags",
+                "rules": [{
+                    "id": "NF001",
+                    "name": "AcceptedButUnusedArgument",
+                    "shortDescription": {"text": "CLI argument accepted but never read"},
+                    "fullDescription": {"text": "Single-file argparse analysis found a declared "
+                                        "argument destination with no provable read. Dynamic "
+                                        "namespace cases are skipped; conditional reads and "
+                                        "other parsers are outside this check."},
+                    "defaultConfiguration": {"level": "warning"},
+                    "helpUri": "https://github.com/nymrel/noop-flags#what-it-refuses-to-answer",
+                    "properties": {"tags": ["correctness", "cli"]},
+                }],
+                "notifications": [
+                    {"id": "NF-SKIPPED",
+                     "shortDescription": {"text": "Source analysis was deliberately skipped"}},
+                    {"id": "NF-ANALYSIS-ERROR",
+                     "shortDescription": {"text": "Source analysis could not complete"}},
+                    {"id": "NF-NO-ANALYSIS", "shortDescription": {"text": "No source was analyzed"}},
+                    {"id": "NF-DISCOVERY-UNKNOWN",
+                     "shortDescription": {"text": "Directory traversal coverage is unknown"}},
+                ],
+            }},
+            "invocations": [{
+                "executionSuccessful": execution_successful,
+                "toolExecutionNotifications": notifications,
+            }],
+            "results": results,
+            "properties": {
+                "candidateFiles": candidates,
+                "analyzedFiles": analyzed,
+                "skippedFiles": len(skipped),
+                "analysisCoverage": coverage,
+                "discoveryCoverage": ("unavailable" if input_failed else
+                                      "complete" if discovery_complete else "unknown"),
+                "scope": "Eligible source files encountered by the existing walk; "
+                         "single-file argparse reads only.",
+            },
+        }],
+    }
 
 
 # --------------------------------------------------------------------------
@@ -319,7 +458,9 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("path", nargs="?", default=".",
                     help="file or directory to scan (default: the current directory)")
-    ap.add_argument("--json", action="store_true", help="machine-readable output")
+    formats = ap.add_mutually_exclusive_group()
+    formats.add_argument("--json", action="store_true", help="machine-readable output")
+    formats.add_argument("--sarif", action="store_true", help="SARIF 2.1.0 output with explicit coverage diagnostics")
     ap.add_argument("--show-skipped", action="store_true",
                     help="list files whose reads could not be proven statically")
     ap.add_argument("--selftest", action="store_true",
@@ -327,13 +468,35 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--version", action="version", version=f"noop-flags {__version__}")
     args = ap.parse_args(argv)
 
+    if args.sarif and args.selftest:
+        ap.error("--sarif describes source scans; use --json for selftest output")
     if args.selftest:
         return selftest(args.json)
 
-    root = Path(args.path).expanduser().resolve()
-    if not root.exists():
+    try:
+        root = Path(args.path).expanduser().resolve()
+        available = root.exists()
+    except (OSError, RuntimeError):
+        if not args.sarif:
+            raise
+        print(json.dumps(_sarif_report([], [], 0, input_failed=True), indent=2))
+        return 2
+    if not available:
+        if args.sarif:
+            print(json.dumps(_sarif_report([], [], 0, input_failed=True), indent=2))
+            return 2
         print(f"cannot scan: no such path: {root}", file=sys.stderr)
         return 2
+
+    if args.sarif:
+        try:
+            findings, skipped, candidates, single_file = _scan_counted(root)
+        except OSError:
+            print(json.dumps(_sarif_report([], [], 0, input_failed=True), indent=2))
+            return 2
+        print(json.dumps(_sarif_report(findings, skipped, candidates,
+                                      discovery_complete=single_file), indent=2))
+        return 1 if findings else 0
 
     findings, skipped = scan(root)
 
