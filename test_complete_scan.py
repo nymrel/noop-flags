@@ -48,6 +48,15 @@ class TestCompleteScan(unittest.TestCase):
         coverage = None if output == "plain" else report["coverage"] if output == "json" else report["runs"][0]["properties"]["completeScan"]
         return code, report, coverage
 
+    def source_metadata(self, source):
+        with source.open("rb") as stream:
+            by_path = source.lstat()
+            by_fd = os.fstat(stream.fileno())
+        fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns",
+                  "st_ctime_ns", "st_birthtime_ns")
+        return {"path": {key: getattr(by_path, key, None) for key in fields},
+                "descriptor": {key: getattr(by_fd, key, None) for key in fields}}
+
     def test_complete_clean_and_finding_scans_have_exact_exit_precedence(self):
         source = self.write("space café.py", CLEAN)
         for mode in ("json", "sarif", "plain"):
@@ -66,7 +75,8 @@ class TestCompleteScan(unittest.TestCase):
         for mode in ("json", "sarif", "plain"):
             with self.subTest(mode=mode):
                 code, report, coverage = self.run_checked(output=mode)
-                self.assertEqual(code, 1)
+                self.assertEqual(code, 1, json.dumps({"report": report,
+                                 "metadata": self.source_metadata(source)}))
                 if coverage:
                     self.assertTrue(coverage["complete"])
                     self.assertEqual(coverage["exitCode"], 1)
@@ -92,16 +102,11 @@ class TestCompleteScan(unittest.TestCase):
 
     def test_rewritten_source_is_stable_before_a_new_scan(self):
         source = self.write("rewritten.py", CLEAN)
+        self.assertEqual(self.run_checked()[0], 0)
         source.write_text(IGNORED, encoding="utf-8")
-        with source.open("rb") as stream:
-            by_path = source.lstat()
-            by_fd = os.fstat(stream.fileno())
-        fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns",
-                  "st_ctime_ns", "st_birthtime_ns")
-        metadata = {"path": {key: getattr(by_path, key, None) for key in fields},
-                    "descriptor": {key: getattr(by_fd, key, None) for key in fields}}
         code, report, _ = self.run_checked()
-        self.assertEqual(code, 1, json.dumps({"report": report, "metadata": metadata}))
+        self.assertEqual(code, 1, json.dumps({"report": report,
+                         "metadata": self.source_metadata(source)}))
 
     def test_zero_sources_is_incomplete_even_with_successful_traversal(self):
         self.write("notes.txt", "outside directory source selection")
